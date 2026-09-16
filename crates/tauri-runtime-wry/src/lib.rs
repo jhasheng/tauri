@@ -5107,6 +5107,18 @@ You may have it installed on another user account, but it is not available for t
     }
   }
 
+  // Windows: reuse `data_store_identifier` as a WebView2 named profile. Webviews that
+  // share the same data directory but use different identifiers get fully isolated
+  // cookies/storage while sharing one browser process.
+  // See https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/multi-profile-support
+  #[cfg(windows)]
+  {
+    if let Some(data_store_identifier) = &webview_attributes.data_store_identifier {
+      webview_builder = webview_builder
+        .with_profile_name(data_store_identifier_profile_name(data_store_identifier));
+    }
+  }
+
   #[cfg(any(target_os = "macos", target_os = "ios"))]
   {
     if let Some(data_store_identifier) = &webview_attributes.data_store_identifier {
@@ -5439,5 +5451,101 @@ fn to_tao_theme(theme: Option<Theme>) -> Option<TaoTheme> {
     Some(Theme::Light) => Some(TaoTheme::Light),
     Some(Theme::Dark) => Some(TaoTheme::Dark),
     _ => None,
+  }
+}
+
+/// Windows: derive a WebView2 profile name from the 16-byte `data_store_identifier`.
+///
+/// Encoding contract (with the app that sets the identifier):
+/// - First byte `1..=15`: the following `len` bytes are the raw account id as ASCII
+///   (alphanumeric, `.`, `_`, `-`), so the profile (and its on-disk directory) shows
+///   the account id itself.
+/// - First byte `0`: fallback for ids that are too long or contain invalid characters;
+///   the remaining 15 bytes are opaque (rendered as 30-char hex).
+///
+/// Different identifiers always map to different profile names, and the same
+/// identifier always maps to the same name.
+#[cfg(windows)]
+fn data_store_identifier_profile_name(id: &[u8; 16]) -> String {
+  let len = id[0] as usize;
+  if (1..16).contains(&len)
+    && id[1..=len]
+      .iter()
+      .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+  {
+    String::from_utf8_lossy(&id[1..=len]).into_owned()
+  } else {
+    id[1..].iter().map(|b| format!("{b:02x}")).collect()
+  }
+}
+
+#[cfg(all(test, windows))]
+mod profile_name_tests {
+  use super::data_store_identifier_profile_name;
+
+  fn id(bytes: &[u8]) -> [u8; 16] {
+    let mut id = [0u8; 16];
+    id[..bytes.len()].copy_from_slice(bytes);
+    id
+  }
+
+  #[test]
+  fn ascii_branch_returns_account_id() {
+    // app encodes "57939" as [len=5, '5','7','9','3','9', 0...]
+    let raw = [5u8, b'5', b'7', b'9', b'3', b'9'];
+    assert_eq!(data_store_identifier_profile_name(&id(&raw)), "57939");
+  }
+
+  #[test]
+  fn ascii_branch_accepts_allowed_special_chars() {
+    let raw = [7u8, b'a', b'.', b'b', b'_', b'c', b'-', b'd'];
+    assert_eq!(data_store_identifier_profile_name(&id(&raw)), "a.b_c-d");
+  }
+
+  #[test]
+  fn ascii_branch_max_length() {
+    let mut raw = vec![15u8];
+    raw.extend(std::iter::repeat(b'a').take(15));
+    let name = data_store_identifier_profile_name(&id(&raw));
+    assert_eq!(name, "a".repeat(15));
+  }
+
+  #[test]
+  fn fallback_branch_when_first_byte_is_zero() {
+    let mut raw = vec![0u8];
+    raw.extend(std::iter::repeat(0xab).take(15));
+    let name = data_store_identifier_profile_name(&id(&raw));
+    assert_eq!(name, "ab".repeat(15));
+  }
+
+  #[test]
+  fn fallback_branch_on_invalid_ascii_chars() {
+    // space and non-ascii printable are not allowed by WebView2 naming rules
+    let raw = [4u8, b'a', b' ', b'/', b'x'];
+    let name = data_store_identifier_profile_name(&id(&raw));
+    assert_eq!(name.len(), 30);
+    assert!(name.chars().all(|c| c.is_ascii_hexdigit()));
+  }
+
+  #[test]
+  fn fallback_branch_on_out_of_range_length() {
+    // first byte 16+ is not a valid length
+    let mut raw = vec![200u8];
+    raw.extend(std::iter::repeat(b'a').take(15));
+    let name = data_store_identifier_profile_name(&id(&raw));
+    assert_eq!(name.len(), 30);
+  }
+
+  #[test]
+  fn all_zero_identifier_is_stable_hex() {
+    let name = data_store_identifier_profile_name(&[0u8; 16]);
+    assert_eq!(name, "00".repeat(15));
+  }
+
+  #[test]
+  fn distinct_identifiers_never_collide() {
+    let a = data_store_identifier_profile_name(&id(&[5u8, b'5', b'7', b'9', b'3', b'9']));
+    let b = data_store_identifier_profile_name(&id(&[5u8, b'5', b'7', b'9', b'3', b'8']));
+    assert_ne!(a, b);
   }
 }

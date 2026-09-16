@@ -13,8 +13,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-wry = { version = "0.55.0", default-features = false, features = [
-  "protocol",
+wry = { version = "0.56.0", default-features = false, features = [
   "os-webview",
   "linux-body",
 ] }
@@ -63,8 +62,6 @@ default = ["x11", "dbus"]
 devtools = ["wry/devtools", "tauri-runtime/devtools"]
 x11 = ["tao/x11", "wry/x11"]
 macos-private-api = [
-  "wry/fullscreen",
-  "wry/transparent",
   "tauri-runtime/macos-private-api",
 ]
 # TODO: Remove in v3 - wry does not have this feature anymore
